@@ -1,6 +1,6 @@
 /* App-Werkstatt – Stationen.
    Projekt-Stationen haben eine eigene App (app: "a1" …). check(a, p): a = Analyse aus checks.js, p = Fortschritt. Ohne check → Häkchen. */
-const esc = s => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+const esc = s => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 const B = s => `<span class="blk">${s}</span>`;          // Block-Name im Text
 const K = s => `<span class="cmp">${s}</span>`;          // Baustein-Name im Text
 
@@ -190,7 +190,7 @@ const STATIONEN = [
     lernen: `
       <div class="concept"><div><span class="big">🕹️</span><b>Steuern</b><small>${B("bewege rakete um x 20 y 0")} – x nach rechts/links, y nach unten/oben</small></div>
         <div><span class="big">💥</span><b>Berührung</b><small>${B("rakete berührt stern")} ist wahr oder falsch</small></div>
-        <div><span class="big">⏱️</span><b>Zeit</b><small>${B("alle 1 Sekunden")} wiederholt etwas immer wieder</small></div></div>
+        <div><span class="big">⏱️</span><b>Zeit</b><small>${B("alle … Sekunden")} wiederholt etwas immer wieder</small></div></div>
       <p>📐 Im Spielfeld ist oben links x = 0 und y = 0. Nach rechts wird x größer, nach <b>unten</b> wird y größer.</p>`,
     komps: ["spielfeld", "figur", "knopf", "zeile", "text"],
     blocks: ["ww_start", "ww_klick", "ww_alle", "ww_bewege", "ww_setzepos", "ww_zufallpos", "ww_beruehrt_fig", "ww_figpos", "controls_if", "controls_ifelse", "logic_compare", "logic_operation", "variables", "math_number", "math_arithmetic", "math_random_int", "ww_set", "ww_meldung", "ww_stoppe", "text", "text_join"],
@@ -204,7 +204,7 @@ const STATIONEN = [
       { t: "Die Punkte werden im Text angezeigt.", check: a => setText(a, ["ww_klick", "ww_alle"]) && a.has("math_change") }
     ],
     bonus: [
-      { t: `Eine Zeit läuft ab: ${B("alle 1 Sekunden")} zählt die Zeit runter, bei 0 ist das Spiel vorbei.`, check: a => a.tops.some(t => t.type === "ww_alle") && (a.has("ww_stoppe") || a.has("ww_meldung")) },
+      { t: `Eine Zeit läuft ab: ${B("alle … Sekunden")} zählt die Zeit runter, bei 0 ist das Spiel vorbei.`, check: a => a.tops.some(t => t.type === "ww_alle") && (a.has("ww_stoppe") || a.has("ww_meldung")) },
       { t: "Eigene Figuren und Farben fürs Spielfeld.", check: a => a.comp("figur").some(f => !["🚀", "⭐"].includes(f.props.emoji)) || a.changed("spielfeld", "hintergrund", "#e0f2fe") }
     ],
     profi: [
@@ -221,14 +221,14 @@ const STATIONEN = [
     lernen: `
       <p>Such dir <b>eine</b> von drei Apps aus (unten bei „Bau deine App“):</p>
       <div class="concept"><div><span class="big">📚</span><b>Hausaufgaben-Liste</b><small>${B("💾 speichere")} merkt sich die Liste – auch wenn die App zu ist</small></div>
-        <div><span class="big">⏳</span><b>Lern-Timer</b><small>${B("alle 1 Sekunden")} zählt herunter, dann: Pause!</small></div>
+        <div><span class="big">⏳</span><b>Lern-Timer</b><small>${B("alle … Sekunden")} zählt herunter, dann: Pause!</small></div>
         <div><span class="big">🏖️</span><b>Ferien-Countdown</b><small>${B("Tage bis zum …")} rechnet mit dem Kalender</small></div></div>
       <p>🔒 Was deine App speichert, bleibt <b>nur auf deinem Gerät</b>.</p>`,
     komps: ["text", "eingabe", "knopf", "liste", "zeile", "bild"],
     blocks: ["ww_start", "ww_klick", "ww_alle", "ww_auswahl", "ww_set", "ww_get", "ww_meldung", "ww_liste_zeigen", "ww_angetippt", "variables", "lists_create_empty", "ww_hinzu", "ww_entferne", "lists_length", "lists_getIndex", "ww_speichere", "ww_lade", "ww_jetzt", "ww_tagebis", "ww_stoppe", "controls_if", "controls_ifelse", "logic_compare", "logic_operation", "math_number", "math_arithmetic", "text", "text_join"],
     pflicht: [
       { t: "Wähle deine App (oben) und baue die Oberfläche dafür.", check: (a, p) => !!(p && p.wahl7) && a.comps.length >= 3 },
-      { t: "📚 Hausaufgaben: Beim Start wird die Liste geladen, beim Hinzufügen gespeichert. ⏳ Timer: Alle 1 Sekunden zählt die Zeit herunter. 🏖️ Countdown: Beim Start steht da „Noch … Tage“.",
+      { t: "📚 Hausaufgaben: Beim Start wird die Liste geladen, beim Hinzufügen gespeichert. ⏳ Timer: Jede Sekunde zählt die Zeit herunter. 🏖️ Countdown: Beim Start steht da „Noch … Tage“.",
         check: (a, p) => {
           const w = p && p.wahl7;
           if (w === "hausaufgaben") return inEv(a, "ww_start", b => b.type === "ww_lade") && inEv(a, "ww_klick", b => b.type === "ww_speichere");

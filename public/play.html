@@ -25,14 +25,20 @@
   (async () => {
     const [, , token, appId] = location.pathname.split("/");
     const msg = document.getElementById("msg");
-    const fail = t => { msg.innerHTML = `<div><b>🙈</b>${t}</div>`; };
+    // Alles, was vom Server oder aus Nutzerdaten kommt, wird nur über DOM-API/textContent eingesetzt (kein innerHTML).
+    const el = (tag, props = {}, ...kids) => { const n = document.createElement(tag); Object.assign(n, props); kids.forEach(k => n.append(k)); return n; };
+    const fail = t => { msg.replaceChildren(el("div", {}, el("b", { textContent: "🙈" }), String(t))); };
     if (!token) return fail("Diese Adresse ist unvollständig.");
     if (!appId) {
       try {
         const r = await fetch(`/api/shared/${encodeURIComponent(token)}`), j = await r.json().catch(() => ({}));
         if (!r.ok) return fail(j.error || "Nicht gefunden.");
         document.title = "Meine Apps";
-        msg.innerHTML = `<div class="menu"><b>📱</b><h1>Welche App?</h1>${j.apps.map(a => `<a href="/a/${token}/${a.id}">${a.titel.replace(/[<&>"]/g, "")}</a>`).join("") || "<p>Noch keine Apps gebaut.</p>"}</div>`;
+        const menu = el("div", { className: "menu" }, el("b", { textContent: "📱" }), el("h1", { textContent: "Welche App?" }));
+        const list = (j.apps || []).filter(a => a && /^[a-z0-9_-]{1,32}$/i.test(String(a.id)));
+        list.forEach(a => menu.append(el("a", { href: `/a/${encodeURIComponent(token)}/${encodeURIComponent(a.id)}`, textContent: String(a.titel || a.id).slice(0, 40) })));
+        if (!list.length) menu.append(el("p", { textContent: "Noch keine Apps gebaut." }));
+        msg.replaceChildren(menu);
       } catch (e) { fail("Keine Verbindung. Ist das Internet da?"); }
       return;
     }

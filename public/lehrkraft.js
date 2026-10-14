@@ -62,7 +62,7 @@
   function render() {
     $("#t-table").innerHTML = `<tr><th>Name</th><th>Zuletzt</th><th>Apps 1–7</th><th>Summe</th><th>Fehler</th><th>Profi</th><th>Erklären (×3)</th><th>Eigene App</th><th>Note</th><th></th></tr>` +
       (list.map((s, i) => `<tr>
-        <td><b>${esc(s.nick)}</b>${s.fails >= 10 ? ' <span class="chip err">gesperrt</span>' : ""}</td>
+        <td><b>${esc(s.nick)}</b>${s.locked ? ' <span class="chip err" title="zeitlich gesperrt (max. 5 Min.) – „PIN zurücksetzen“ hebt die Sperre sofort auf">gesperrt</span>' : ""}</td>
         <td>${time(s.updated_at)}</td>
         <td>${pts7(s.a.ev)}</td>
         <td><b>${s.a.ev.appsSumme}</b>/21</td>

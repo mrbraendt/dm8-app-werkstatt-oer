@@ -1,0 +1,7 @@
+# Sicherheits-Header für statische Dateien (der Worker setzt sie nur für API-Antworten,
+# statische Dateien liefert Cloudflare direkt aus – deshalb hier).
+/*
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: no-referrer
+  X-Frame-Options: DENY
+  Permissions-Policy: camera=(), microphone=(), geolocation=()

@@ -5,7 +5,17 @@
 const MAX_DATA = 600_000;
 const MAX_VERSIONS = 60;
 const VERSION_GAP_MIN = 10;
-const MAX_FAILS = 10;
+// PIN-Sperre (zeitlich, ohne Schema-Änderung): Die ersten FREE_FAILS Fehlversuche sind folgenlos. Danach muss man
+// nach jedem weiteren Fehlversuch warten (30 s, 1, 2, 4 Min., höchstens 5 Min.). Während der Wartezeit werden ALLE
+// Anmeldungen abgelehnt (auch mit richtiger PIN) und zählen nicht weiter. Eine richtige PIN nach der Wartezeit setzt
+// den Zähler zurück; die Lehrkraft kann jederzeit „PIN zurücksetzen“ (setzt fails = 0).
+// Ablage in der vorhandenen Spalte `fails`: Zeitstempel (Sekunden) * 100 + Anzahl Fehlversuche (0–99).
+// Alte Werte (0–10) bleiben gültig (Zeit = 0 → nicht gesperrt). Grenze: Wer ein Konto dauernd beschießt, kann es
+// jeweils bis zu 5 Minuten blockieren – aber nicht mehr dauerhaft.
+const FREE_FAILS = 5;
+const waitSec = n => n < FREE_FAILS ? 0 : Math.min(300, 30 * 2 ** (n - FREE_FAILS));
+const decodeFails = f => ({ count: (f || 0) % 100, at: Math.floor((f || 0) / 100) });
+const lockLeft = f => { const { count, at } = decodeFails(f); return Math.max(0, Math.ceil(at + waitSec(count) - Date.now() / 1000)); };
 
 const json = (data, status = 200) =>
   new Response(JSON.stringify(data), { status, headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" } });
@@ -15,10 +25,23 @@ const kurse = env => (env.KURSE || "").split(",").map(s => s.trim().toLowerCase(
 const cleanNick = n => String(n || "").trim().replace(/\s+/g, " ").slice(0, 20);
 const nickKey = n => cleanNick(n).toLowerCase();
 
+// Ohne Secret PIN_SALT gilt der alte Standard-Salt. Ihn jetzt abzuschalten, würde alle bestehenden PINs ungültig
+// machen (die Hashes wurden damit erzeugt) – deshalb nur eine laute Warnung im Log (siehe LIESMICH.md, „Betrieb“).
+let saltWarned = false;
 async function hashPin(env, kurs, key, pin) {
+  if (!env.PIN_SALT && !saltWarned) { saltWarned = true; console.warn("PIN_SALT ist nicht gesetzt – unsicherer Standard-Salt aktiv. Bitte `wrangler secret put PIN_SALT` (setzt alle PINs neu!)."); }
   const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`${env.PIN_SALT || "werkstatt"}|${kurs}|${key}|${pin}`));
   return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, "0")).join("");
 }
+// Zeitkonstanter Vergleich zweier gleich langer Zeichenketten (hier: SHA-256-Hex)
+function sameHash(a, b) {
+  if (a.length !== b.length) return false;
+  let d = 0;
+  for (let i = 0; i < a.length; i++) d |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return d === 0;
+}
+const sha = async t => [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(t)))].map(b => b.toString(16).padStart(2, "0")).join("");
+const validAppId = id => typeof id === "string" && /^[a-z0-9_-]{1,32}$/i.test(id);
 async function body(request) { try { return await request.json(); } catch { return {}; } }
 
 async function auth(env, b) {
@@ -27,9 +50,11 @@ async function auth(env, b) {
   if (!key || !/^\d{4}$/.test(pin)) return { err: fail("Vorname und vierstellige PIN eingeben.") };
   const row = await env.DB.prepare("SELECT * FROM students WHERE kurs = ? AND nick_key = ?").bind(kurs, key).first();
   if (!row) return { err: fail("Diesen Namen gibt es in deiner Klasse noch nicht.", 404) };
-  if (row.fails >= MAX_FAILS) return { err: fail("Zu viele falsche PINs. Bitte deine Lehrkraft, die PIN zurückzusetzen.", 423) };
-  if (row.pin_hash !== await hashPin(env, kurs, key, pin)) {
-    await env.DB.prepare("UPDATE students SET fails = fails + 1 WHERE kurs = ? AND nick_key = ?").bind(kurs, key).run();
+  const left = lockLeft(row.fails);
+  if (left > 0) return { err: fail(`Zu viele falsche PINs. Bitte warte ${left > 90 ? Math.ceil(left / 60) + " Minuten" : left + " Sekunden"} und versuche es dann noch einmal (oder bitte deine Lehrkraft, die PIN zurückzusetzen).`, 429) };
+  if (!sameHash(row.pin_hash, await hashPin(env, kurs, key, pin))) {
+    const n = Math.min(99, decodeFails(row.fails).count + 1);
+    await env.DB.prepare("UPDATE students SET fails = ? WHERE kurs = ? AND nick_key = ?").bind(Math.floor(Date.now() / 1000) * 100 + n, kurs, key).run();
     return { err: fail("Die PIN stimmt nicht.", 401) };
   }
   if (row.fails) await env.DB.prepare("UPDATE students SET fails = 0 WHERE kurs = ? AND nick_key = ?").bind(kurs, key).run();
@@ -56,7 +81,9 @@ async function student(request, env, path) {
   const { row, kurs, key } = a;
   if (path === "/api/login") return json(pub(row));
   if (path === "/api/save") {
-    const apps = JSON.stringify(b.apps && typeof b.apps === "object" ? b.apps : JSON.parse(row.apps || "{}"));
+    // App-Kennungen (a1 … a7, eigen) werden geprüft; ungültige Einträge fliegen raus (Schutz vor Schadcode in Adressen)
+    const given = b.apps && typeof b.apps === "object" && !Array.isArray(b.apps) ? Object.fromEntries(Object.entries(b.apps).filter(([id]) => validAppId(id))) : null;
+    const apps = JSON.stringify(given || JSON.parse(row.apps || "{}"));
     const progress = JSON.stringify(b.progress && typeof b.progress === "object" ? b.progress : JSON.parse(row.progress || "{}"));
     if (apps.length > MAX_DATA || progress.length > 60_000) return fail("Zu viele Daten.", 413);
     const t = now();
@@ -86,14 +113,30 @@ async function student(request, env, path) {
   return fail("Unbekannt.", 404);
 }
 
+// Lehrkraft-Bremse: Passwort wird per Hash zeitkonstant verglichen; jeder Fehlversuch kostet 1 s Wartezeit
+// (ab 10 Fehlversuchen in 15 Min. 4 s). Grenzen: Der Zähler liegt nur im Speicher EINER Worker-Instanz, parallele
+// Anfragen und mehrere Instanzen umgehen ihn. Echtes Rate-Limiting gehört in eine Cloudflare-Regel (siehe LIESMICH.md).
+const tFails = [];
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+async function teacherOk(request, env) {
+  const given = request.headers.get("x-teacher-key") || "";
+  const ok = !!env.TEACHER_KEY && sameHash(await sha("tk|" + given), await sha("tk|" + env.TEACHER_KEY));
+  if (ok) return true;
+  const t = Date.now();
+  while (tFails.length && t - tFails[0] > 900_000) tFails.shift();
+  tFails.push(t); if (tFails.length > 1000) tFails.shift();
+  await sleep(tFails.length >= 10 ? 4000 : 1000);
+  return false;
+}
+
 async function teacher(request, env, url, path) {
-  if (!env.TEACHER_KEY || request.headers.get("x-teacher-key") !== env.TEACHER_KEY) return fail("Falsches Lehrkraft-Passwort.", 401);
+  if (!await teacherOk(request, env)) return fail("Falsches Lehrkraft-Passwort.", 401);
   if (path === "/api/t/kurse") return json({ kurse: kurse(env) });
   if (path === "/api/t/kurs") {
     const kurs = String(url.searchParams.get("kurs") || "").toLowerCase();
     const { results } = await env.DB.prepare(`SELECT s.nick, s.nick_key, s.apps, s.progress, s.updated_at, s.fails, r.data AS rating
       FROM students s LEFT JOIN ratings r ON r.kurs = s.kurs AND r.nick_key = s.nick_key WHERE s.kurs = ? ORDER BY s.nick_key`).bind(kurs).all();
-    return json({ students: results.map(r => ({ ...r, apps: JSON.parse(r.apps || "{}"), progress: JSON.parse(r.progress || "{}"), rating: r.rating ? JSON.parse(r.rating) : null })) });
+    return json({ students: results.map(r => ({ ...r, fails: decodeFails(r.fails).count, locked: lockLeft(r.fails) > 0, apps: JSON.parse(r.apps || "{}"), progress: JSON.parse(r.progress || "{}"), rating: r.rating ? JSON.parse(r.rating) : null })) });
   }
   const b = await body(request);
   const kurs = String(b.kurs || "").toLowerCase(), key = nickKey(b.nick);
@@ -124,26 +167,43 @@ async function teacher(request, env, url, path) {
 
 // Freigegebene App als JSON für /play.html
 async function shared(env, token, appId) {
-  if (!/^[a-z0-9]{6}$/.test(token) || (appId && !/^[a-z0-9]{1,12}$/.test(appId))) return fail("Nicht gefunden.", 404);
+  if (!/^[a-z0-9]{6}$/.test(token) || (appId && !validAppId(appId))) return fail("Nicht gefunden.", 404);
   const row = await env.DB.prepare("SELECT apps, nick FROM students WHERE share = ?").bind(token).first();
   if (!row) return fail("Diese App ist nicht (mehr) freigegeben.", 404);
   const apps = JSON.parse(row.apps || "{}");
   // ohne App-Kennung: Liste aller gebauten Apps (für die kurze Adresse /a/<code>)
-  if (!appId) return json({ apps: Object.entries(apps).filter(([, a]) => a && a.ui && a.ui.length).map(([id, a]) => ({ id, titel: String((a.screen || {}).titel || id).slice(0, 40) })) });
-  if (!apps[appId]) return fail("Diese App gibt es nicht.", 404);
+  if (!appId) return json({ apps: Object.entries(apps).filter(([id, a]) => validAppId(id) && a && a.ui && a.ui.length).map(([id, a]) => ({ id, titel: String((a.screen || {}).titel || id).slice(0, 40) })) });
+  if (!Object.prototype.hasOwnProperty.call(apps, appId) || !apps[appId]) return fail("Diese App gibt es nicht.", 404);
   return json({ app: apps[appId] });
+}
+
+// Sicherheits-Header für alle Antworten. Bewusst KEINE strenge CSP: Blockly und die Seiten nutzen Inline-Skripte/-Styles,
+// die Vorschau (srcdoc-iframes mit sandbox) erbt eine CSP von der Elternseite. Nur das Einbetten wird verboten
+// (die iframes der Werkstatt sind srcdoc und davon nicht betroffen).
+function secure(res) {
+  const r = new Response(res.body, res);
+  r.headers.set("x-content-type-options", "nosniff");
+  r.headers.set("referrer-policy", "no-referrer");
+  r.headers.set("x-frame-options", "DENY");
+  r.headers.set("content-security-policy", "frame-ancestors 'none'");
+  r.headers.set("permissions-policy", "camera=(), microphone=(), geolocation=()");
+  return r;
 }
 
 export default {
   async fetch(request, env) {
-    const url = new URL(request.url), path = url.pathname;
-    try {
-      if (path.startsWith("/api/shared/")) { const [, , , t, a] = path.split("/"); return await shared(env, t, a); }
-      if (path.startsWith("/a/")) return env.ASSETS.fetch(new Request(new URL("/play", url), request));
-      if (!path.startsWith("/api/")) return env.ASSETS.fetch(request);
-      if (path.startsWith("/api/t/")) return await teacher(request, env, url, path);
-      if (request.method !== "POST") return fail("Nur POST.", 405);
-      return await student(request, env, path);
-    } catch (e) { return fail("Serverfehler: " + e.message, 500); }
+    return secure(await handle(request, env));
   }
 };
+
+async function handle(request, env) {
+  const url = new URL(request.url), path = url.pathname;
+  try {
+    if (path.startsWith("/api/shared/")) { const [, , , t, a] = path.split("/"); return await shared(env, t, a); }
+    if (path.startsWith("/a/")) return env.ASSETS.fetch(new Request(new URL("/play", url), request));
+    if (!path.startsWith("/api/")) return env.ASSETS.fetch(request);
+    if (path.startsWith("/api/t/")) return await teacher(request, env, url, path);
+    if (request.method !== "POST") return fail("Nur POST.", 405);
+    return await student(request, env, path);
+  } catch (e) { console.error("Serverfehler", path, e); return fail("Serverfehler. Bitte versuche es gleich noch einmal.", 500); }
+}

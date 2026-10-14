@@ -63,7 +63,12 @@
     catch (e) { setSave("⚠️ nicht gespeichert!", true); toast("⚠️ " + e.message); saveT = setTimeout(save, 15000); }
   }
   $("#logout").onclick = async () => { await save(true); sessionStorage.removeItem("aw-session"); location.reload(); };
-  window.addEventListener("beforeunload", e => { if (!dirty) return; fetch("/api/save", { method: "POST", keepalive: true, headers: { "content-type": "application/json" }, body: JSON.stringify({ ...me, apps, progress }) }); e.preventDefault(); e.returnValue = ""; });
+  // Notfall-Speichern beim Verlassen: auch bei Tab-Wechsel/Schließen (iPad-Safari feuert oft nur pagehide/visibilitychange).
+  // keepalive-Anfragen sind vom Browser auf ca. 64 KB begrenzt; größere Stände werden dann beim nächsten Autosave gesichert.
+  function flush() { if (!dirty || !me) return; try { fetch("/api/save", { method: "POST", keepalive: true, headers: { "content-type": "application/json" }, body: JSON.stringify({ ...me, apps, progress }) }).catch(() => {}); } catch (e) {} }
+  window.addEventListener("beforeunload", e => { if (!dirty) return; flush(); e.preventDefault(); e.returnValue = ""; });
+  window.addEventListener("pagehide", flush);
+  document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") flush(); });
   document.addEventListener("keydown", e => { if ((e.ctrlKey || e.metaKey) && e.key === "s") { e.preventDefault(); save(true); } });
 
   /* ================= Apps ================= */
@@ -164,9 +169,9 @@
     const node = c => {
       const def = WW.COMPONENTS[c.typ] || {};
       const kids = def.kinder ? `<div class="kids">${(c.kinder || []).map(node).join("")}
-        ${def.kinder.filter(t => (s.komps || []).includes(t)).map(t => `<button class="add-in" data-add="${t}" data-in="${c.id}">+ ${WW.COMPONENTS[t].icon} ${WW.COMPONENTS[t].label}</button>`).join("")}</div>` : "";
-      return `<div><div class="node ${selId === c.id ? "sel" : ""}" data-id="${c.id}"><span>${def.icon || "?"}</span><span class="nm">${esc(c.name)}</span><span class="ty">${def.label || c.typ}</span>
-        <button data-up="${c.id}" title="nach oben">▲</button><button data-down="${c.id}" title="nach unten">▼</button><button data-del="${c.id}" title="löschen">🗑</button></div>${kids}</div>`;
+        ${def.kinder.filter(t => (s.komps || []).includes(t)).map(t => `<button class="add-in" data-add="${t}" data-in="${esc(c.id)}">+ ${WW.COMPONENTS[t].icon} ${WW.COMPONENTS[t].label}</button>`).join("")}</div>` : "";
+      return `<div><div class="node ${selId === c.id ? "sel" : ""}" data-id="${esc(c.id)}"><span>${def.icon || "?"}</span><span class="nm">${esc(c.name)}</span><span class="ty">${def.label || c.typ}</span>
+        <button data-up="${esc(c.id)}" title="nach oben">▲</button><button data-down="${esc(c.id)}" title="nach unten">▼</button><button data-del="${esc(c.id)}" title="löschen">🗑</button></div>${kids}</div>`;
     };
     const sel = selId && findComp(selId);
     $("#designer").innerHTML = `
